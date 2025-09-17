@@ -7,8 +7,10 @@
   "font_path_small": null,
   "name_min_px": 18,
   "name_max_px": 64,
-  "small_min_px": 14,
-  "small_max_px": null,
+  "rarity_min_px": 48,
+  "rarity_max_px": 48,
+  "number_min_px": 24,
+  "number_max_px": 24,
   "ellipsis": true,
   "auto_color": true,
   "text_color_light": [243, 241, 236, 238],
@@ -33,5 +35,6 @@
   "offset_number": [-80, 22],
   "anchor_name": "lt",
   "anchor_rarity": "rt",
-  "anchor_number": "rt"
+  "anchor_number": "rt",
+  "supersample_factor": 4
 }

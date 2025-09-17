@@ -76,6 +76,10 @@ DEFAULT_CONFIG = {
     "name_max_px": None,          # 若 None，自动基于可用空间
     "small_min_px": 14,
     "small_max_px": None,
+    "rarity_min_px": 14,
+    "rarity_max_px": None,
+    "number_min_px": 14,
+    "number_max_px": None,
     "ellipsis": True,             # 如无法缩小到适应，末尾加省略号
     
     # Colors (auto or manual)
@@ -110,6 +114,9 @@ DEFAULT_CONFIG = {
     "anchor_name": "lt",
     "anchor_rarity": "rt",
     "anchor_number": "rt",
+
+    # Super-sampling for anti-aliasing
+    "supersample_factor": 4,
 }
 
 
@@ -121,46 +128,53 @@ class AcrylicPanelTextRenderer:
         self.w, self.h = self.img.size
     
     @staticmethod
-    def _fit_font_to_box(draw, text, font_path, min_px, max_px, max_w, max_h, allow_ellipsis=True):
+    def _fit_font_to_box(draw, text, font_path, min_px, max_px, max_w, max_h, allow_ellipsis=True, scale_factor: int = 1):
         """Return font, text_w, text_h, size, possibly ellipsized text."""
+        # Scale input dimensions for fitting
+        min_px_scaled = min_px * scale_factor
+        max_w_scaled = max_w * scale_factor
+        max_h_scaled = max_h * scale_factor
+        
         # If max_px unset, start from height
         if max_px is None:
-            max_px = int(max_h * 0.95)
-        size = max(min_px, max_px)
+            max_px_scaled = int(max_h_scaled * 0.95)
+        else:
+            max_px_scaled = max_px * scale_factor
+
+        size_scaled = max(min_px_scaled, max_px_scaled)
         last_ok = None
-        while size >= min_px:
+        while size_scaled >= min_px_scaled:
             try:
-                f = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+                f = ImageFont.truetype(font_path, size_scaled) if font_path else ImageFont.load_default()
             except Exception:
                 f = ImageFont.load_default()
             bbox = draw.textbbox((0,0), text, font=f)
             tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-            if tw <= max_w and th <= max_h:
-                last_ok = (f, tw, th, size, text)
+            if tw <= max_w_scaled and th <= max_h_scaled:
+                last_ok = (f, tw, th, size_scaled, text)
                 break
-            size -= 1
+            size_scaled -= 1
         if last_ok:
             return last_ok
         # Try ellipsis if still too big
         if allow_ellipsis:
             for cut in range(len(text), 0, -1):
                 t = text[:cut] + "…"
-                size = min_px
+                size_scaled = min_px_scaled
                 try:
-                    f = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+                    f = ImageFont.truetype(font_path, size_scaled) if font_path else ImageFont.load_default()
                 except Exception:
                     f = ImageFont.load_default()
                 bbox = draw.textbbox((0,0), t, font=f)
                 tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-                if tw <= max_w and th <= max_h:
-                    return f, tw, th, size, t
-        # Fallback: smallest size, clipped
-        try:
-            f = ImageFont.truetype(font_path, min_px) if font_path else ImageFont.load_default()
-        except Exception:
-            f = ImageFont.load_default()
-        bbox = draw.textbbox((0,0), text, font=f)
-        return f, bbox[2]-bbox[0], bbox[3]-bbox[1], min_px, text
+                if tw <= max_w_scaled and th <= max_h_scaled:
+                    return (f, tw, th, size_scaled, t)
+            try:
+                f = ImageFont.truetype(font_path, min_px_scaled) if font_path else ImageFont.load_default()
+            except Exception:
+                f = ImageFont.load_default()
+            bbox = draw.textbbox((0,0), text, font=f)
+            return (f, bbox[2]-bbox[0], bbox[3]-bbox[1], min_px_scaled, text)
     
     def _auto_colors(self, cfg):
         bg = sample_avg_color(self.img, self.panel)
@@ -188,6 +202,10 @@ class AcrylicPanelTextRenderer:
             cfg_full = dict(DEFAULT_CONFIG)
             cfg_full.update(cfg or {})
         
+        scale_factor = cfg_full.get("supersample_factor", 1)
+        scaled_w, scaled_h = self.w * scale_factor, self.h * scale_factor
+        scaled_panel = tuple(int(c * scale_factor) for c in self.panel)
+
         # Colors
         if cfg_full["auto_color"]:
             base_color, stroke_color, glow_color = self._auto_colors(cfg_full)
@@ -196,115 +214,123 @@ class AcrylicPanelTextRenderer:
             stroke_color = tuple(cfg_full.get("stroke_color_light", (255,255,255,90)))
             glow_color = (0,0,0,cfg_full["glow_opacity"])
         
-        # Content area (padding)
-        x1,y1,x2,y2 = self.panel
-        x1 += cfg_full["padding_px"]; y1 += cfg_full["padding_px"]
-        x2 -= cfg_full["padding_px"]; y2 -= cfg_full["padding_px"]
+        # Content area (padding) - scaled
+        x1,y1,x2,y2 = scaled_panel
+        padding_px_scaled = cfg_full["padding_px"] * scale_factor
+        x1 += padding_px_scaled; y1 += padding_px_scaled
+        x2 -= padding_px_scaled; y2 -= padding_px_scaled
         content = (x1,y1,x2,y2)
         cw, ch = (x2-x1, y2-y1)
         left_w = int(cw * cfg_full["left_ratio"])
         right_w = cw - left_w
         
-        # Create layers
-        text_layer  = Image.new("RGBA", self.img.size, (0,0,0,0))
-        glow_layer  = Image.new("RGBA", self.img.size, (0,0,0,0))
-        shadow_layer= Image.new("RGBA", self.img.size, (0,0,0,0))
-        backplate_layer = Image.new("RGBA", self.img.size, (0,0,0,0))
+        # Create high-resolution layers
+        text_layer_hr  = Image.new("RGBA", (scaled_w, scaled_h), (0,0,0,0))
+        glow_layer_hr  = Image.new("RGBA", (scaled_w, scaled_h), (0,0,0,0))
+        shadow_layer_hr= Image.new("RGBA", (scaled_w, scaled_h), (0,0,0,0))
+        backplate_layer_hr = Image.new("RGBA", (scaled_w, scaled_h), (0,0,0,0))
         
-        draw_text   = ImageDraw.Draw(text_layer)
-        draw_glow   = ImageDraw.Draw(glow_layer)
-        draw_shadow = ImageDraw.Draw(shadow_layer)
-        draw_bp     = ImageDraw.Draw(backplate_layer)
+        draw_text_hr   = ImageDraw.Draw(text_layer_hr)
+        draw_glow_hr   = ImageDraw.Draw(glow_layer_hr)
+        draw_shadow_hr = ImageDraw.Draw(shadow_layer_hr)
+        draw_bp_hr     = ImageDraw.Draw(backplate_layer_hr)
         
-        # Vertical alignment baseline
+        # Vertical alignment baseline - scaled
         if isinstance(cfg_full["v_align"], (int, float)):
-            v_offset = int(cfg_full["v_align"])
+            v_offset = int(cfg_full["v_align"] * scale_factor)
             top = y1 + v_offset
             bottom = y2 + v_offset
         else:
             top, bottom = y1, y2
         
-        # Fit fonts
+        # Fit fonts - passing scale_factor
         name_box_w = left_w
         name_box_h = (bottom - top)
         name_font, name_tw, name_th, name_fs, name_text = self._fit_font_to_box(
-            draw_text, name, cfg_full["font_path_main"] or cfg_full["font_path_small"] or find_cjk_font(),
-            cfg_full["name_min_px"], cfg_full["name_max_px"], name_box_w, name_box_h, allow_ellipsis=cfg_full["ellipsis"]
+            draw_text_hr, name, cfg_full["font_path_main"] or cfg_full["font_path_small"] or find_cjk_font(),
+            cfg_full["name_min_px"], cfg_full["name_max_px"], name_box_w, name_box_h, allow_ellipsis=cfg_full["ellipsis"], scale_factor=scale_factor
         )
         right_box_h = (bottom - top)
         # Two lines must fit together
         small_font_path = cfg_full["font_path_small"] or cfg_full["font_path_main"] or find_cjk_font()
         # We'll find a size that fits both, by binary search on size possibly
-        def fit_small(text, max_w, max_h, min_px, max_px):
-            # start high, go down
-            if max_px is None: max_px = int(max_h*0.6)
-            size = max_px
+        def fit_small_scaled(text, max_w, max_h, min_px, max_px, scale_factor):
+            min_px_scaled = min_px * scale_factor
+            max_w_scaled = max_w * scale_factor
+            max_h_scaled = max_h * scale_factor
+
+            if max_px is None: max_px_scaled = int(max_h_scaled*0.6)
+            else: max_px_scaled = max_px * scale_factor
+
+            size_scaled = max(min_px_scaled, max_px_scaled)
             ok = None
-            while size >= min_px:
+            while size_scaled >= min_px_scaled:
                 try:
-                    f = ImageFont.truetype(small_font_path, size) if small_font_path else ImageFont.load_default()
+                    f = ImageFont.truetype(small_font_path, size_scaled) if small_font_path else ImageFont.load_default()
                 except Exception:
                     f = ImageFont.load_default()
-                bbox = draw_text.textbbox((0,0), text, font=f)
+                bbox = draw_text_hr.textbbox((0,0), text, font=f)
                 tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-                if tw <= max_w and th <= max_h:
-                    ok = (f, tw, th, size, text); break
-                size -= 1
+                if tw <= max_w_scaled and th <= max_h_scaled:
+                    ok = (f, tw, th, size_scaled, text); break
+                size_scaled -= 1
             if ok: return ok
             # try ellipsis
             t = text
             for cut in range(len(text), 0, -1):
                 t = text[:cut] + "…"
-                size = min_px
+                size_scaled = min_px_scaled
                 try:
-                    f = ImageFont.truetype(small_font_path, size) if small_font_path else ImageFont.load_default()
+                    f = ImageFont.truetype(small_font_path, size_scaled) if font_path else ImageFont.load_default()
                 except Exception:
                     f = ImageFont.load_default()
-                bbox = draw_text.textbbox((0,0), t, font=f)
+                bbox = draw_text_hr.textbbox((0,0), t, font=f)
                 tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-                if tw <= max_w and th <= max_h:
-                    return (f, tw, th, size, t)
+                if tw <= max_w_scaled and th <= max_h_scaled:
+                    return (f, tw, th, size_scaled, t)
             try:
-                f = ImageFont.truetype(small_font_path, min_px) if small_font_path else ImageFont.load_default()
+                f = ImageFont.truetype(small_font_path, min_px_scaled) if font_path else ImageFont.load_default()
             except Exception:
                 f = ImageFont.load_default()
-            bbox = draw_text.textbbox((0,0), text, font=f)
-            return (f, bbox[2]-bbox[0], bbox[3]-bbox[1], min_px, text)
+            bbox = draw_text_hr.textbbox((0,0), text, font=f)
+            return (f, bbox[2]-bbox[0], bbox[3]-bbox[1], min_px_scaled, text)
         
         # We'll first fit each line to half height minus gap; later enforce combined fit
         half_h = right_box_h//2
-        rarity_pack = fit_small(rarity, right_w, half_h, cfg_full["small_min_px"], cfg_full["small_max_px"])
-        number_pack = fit_small(number, right_w, half_h, cfg_full["small_min_px"], cfg_full["small_max_px"])
+        rarity_pack = fit_small_scaled(rarity, right_w, half_h, cfg_full["rarity_min_px"], cfg_full["rarity_max_px"], scale_factor)
+        number_pack = fit_small_scaled(number, right_w, half_h, cfg_full["number_min_px"], cfg_full["number_max_px"], scale_factor)
         rarity_font, rarity_tw, rarity_th, rarity_fs, rarity_text = rarity_pack
         number_font, number_tw, number_th, number_fs, number_text = number_pack
         
-        # Ensure both lines + gap fit vertically
-        line_gap = cfg_full["line_gap_px"] if cfg_full["line_gap_px"] is not None else max(2, int(min(rarity_fs, number_fs)*0.25))
-        total_h = rarity_th + number_th + line_gap
+        # Ensure both lines + gap fit vertically - scaled
+        line_gap_scaled = (cfg_full["line_gap_px"] * scale_factor) if cfg_full["line_gap_px"] is not None else max(2, int(min(rarity_fs, number_fs)*0.25))
+        total_h = rarity_th + number_th + line_gap_scaled
         if total_h > right_box_h:
             # scale down proportionally
             scale = right_box_h / total_h
-            new_size = max(cfg_full["small_min_px"], int(min(rarity_fs, number_fs) * scale))
+            # Calculate new sizes based on their respective min_px and the overall scale
+            new_rarity_size_scaled = max(cfg_full["rarity_min_px"] * scale_factor, int(rarity_fs * scale))
+            new_number_size_scaled = max(cfg_full["number_min_px"] * scale_factor, int(number_fs * scale))
             try:
-                rarity_font = ImageFont.truetype(small_font_path, new_size)
-                number_font = ImageFont.truetype(small_font_path, new_size)
+                rarity_font = ImageFont.truetype(small_font_path, new_rarity_size_scaled)
+                number_font = ImageFont.truetype(small_font_path, new_number_size_scaled)
             except Exception:
                 rarity_font = number_font = ImageFont.load_default()
-            rarity_bbox = draw_text.textbbox((0,0), rarity_text, font=rarity_font)
-            number_bbox = draw_text.textbbox((0,0), number_text, font=number_font)
+            rarity_bbox = draw_text_hr.textbbox((0,0), rarity_text, font=rarity_font)
+            number_bbox = draw_text_hr.textbbox((0,0), number_text, font=number_font)
             rarity_tw, rarity_th = rarity_bbox[2]-rarity_bbox[0], rarity_bbox[3]-rarity_bbox[1]
             number_tw, number_th = number_bbox[2]-number_bbox[0], number_bbox[3]-number_bbox[1]
-            line_gap = max(2, int(new_size*0.25))
-            total_h = rarity_th + number_th + line_gap
+            # Recalculate line_gap based on potentially different new font sizes
+            line_gap_scaled = (cfg_full["line_gap_px"] * scale_factor) if cfg_full["line_gap_px"] is not None else max(2, int(min(new_rarity_size_scaled, new_number_size_scaled)*0.25))
+            total_h = rarity_th + number_th + line_gap_scaled
         
-        # Coordinates (base positions before offsets)
+        # Coordinates (base positions before offsets) - scaled
         left_x = x1
         if cfg_full["v_align"] == "top":
             left_y = top
         elif cfg_full["v_align"] == "bottom":
             left_y = bottom - name_th
-        elif isinstance(cfg_full["v_align"], (int,float)):
-            # already offset top/bottom above
+        elif isinstance(cfg_full["v_align"], (int,float)):  # already offset top/bottom above
             left_y = top + (right_box_h - name_th)//2
         else: # center
             left_y = top + (right_box_h - name_th)//2
@@ -316,19 +342,19 @@ class AcrylicPanelTextRenderer:
             rarity_y = bottom - total_h
         else:
             rarity_y = top + (right_box_h - total_h)//2
-        number_y = rarity_y + rarity_th + line_gap
+        number_y = rarity_y + rarity_th + line_gap_scaled
 
-        # Apply configured pixel offsets (tuple) — allow lists too
-        def to_xy(v):
+        # Apply configured pixel offsets (tuple) — allow lists too - scaled
+        def to_xy_scaled(v, scale):
             if v is None: return (0,0)
             try:
-                return (int(v[0]), int(v[1]))
+                return (int(v[0] * scale), int(v[1] * scale))
             except Exception:
                 return (0,0)
 
-        off_name = to_xy(cfg_full.get("offset_name", (0,0)))
-        off_rarity = to_xy(cfg_full.get("offset_rarity", (0,0)))
-        off_number = to_xy(cfg_full.get("offset_number", (0,0)))
+        off_name = to_xy_scaled(cfg_full.get("offset_name", (0,0)), scale_factor)
+        off_rarity = to_xy_scaled(cfg_full.get("offset_rarity", (0,0)), scale_factor)
+        off_number = to_xy_scaled(cfg_full.get("offset_number", (0,0)), scale_factor)
 
         left_x += off_name[0]; left_y += off_name[1]
         print("full cfg_full:", cfg_full)
@@ -344,62 +370,74 @@ class AcrylicPanelTextRenderer:
         anchor_rarity = cfg_full.get("anchor_rarity", "rt")
         anchor_number = cfg_full.get("anchor_number", "rt")
         
-        # Optional backplate (rounded rects behind left and right blocks)
+        # Optional backplate (rounded rects behind left and right blocks) - scaled
         if cfg_full["backplate"]:
             bp_alpha = cfg_full["backplate_alpha"]
             bp_color = (0,0,0,bp_alpha) if luminance(sample_avg_color(self.img, self.panel))>180 else (255,255,255,bp_alpha)
             # Left plate
-            left_plate = (left_x-6, left_y-4, left_x + name_tw + 6, left_y + name_th + 6)
-            right_plate = (right_x_right - max(rarity_tw, number_tw) - 6, rarity_y-4, right_x_right + 6, number_y + number_th + 6)
+            left_plate = (left_x-6*scale_factor, left_y-4*scale_factor, left_x + name_tw + 6*scale_factor, left_y + name_th + 6*scale_factor)
+            right_plate = (right_x_right - max(rarity_tw, number_tw) - 6*scale_factor, rarity_y-4*scale_factor, right_x_right + 6*scale_factor, number_y + number_th + 6*scale_factor)
             for plate in [left_plate, right_plate]:
-                rx = cfg_full["backplate_radius"]
-                shape = Image.new("L", self.img.size, 0)
+                rx = cfg_full["backplate_radius"] * scale_factor
+                shape = Image.new("L", (scaled_w, scaled_h), 0)
                 d = ImageDraw.Draw(shape)
                 d.rounded_rectangle(plate, radius=rx, fill=255)
-                colored = Image.new("RGBA", self.img.size, bp_color)
-                backplate_layer = Image.composite(colored, Image.new("RGBA", self.img.size, (0,0,0,0)), shape)
+                colored = Image.new("RGBA", (scaled_w, scaled_h), bp_color)
+                backplate_layer_hr = Image.composite(colored, Image.new("RGBA", (scaled_w, scaled_h), (0,0,0,0)), shape)
+                backplate_layer = backplate_layer_hr.resize((self.w, self.h), Image.Resampling.LANCZOS)
                 self.img = Image.alpha_composite(self.img, backplate_layer)
         
         # Shadow + Glow draw helpers
-        def draw_text_effects(draw_target, text, pos, font, anchor):
+        def draw_text_effects_hr(draw_target_hr, text, pos_hr, font_hr, anchor):
             # Shadow
             if cfg_full["drop_shadow"]:
                 sx, sy = cfg_full["shadow_offset"]
-                sh_layer = Image.new("RGBA", self.img.size, (0,0,0,0))
-                dsh = ImageDraw.Draw(sh_layer)
-                dsh.text((pos[0]+sx, pos[1]+sy), text, font=font, fill=(0,0,0,cfg_full["shadow_opacity"]), anchor=anchor)
-                sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(cfg_full["shadow_blur"]))
-                self.img.paste(sh_layer, (0,0), sh_layer)
+                draw_shadow_hr.text((pos_hr[0]+sx*scale_factor, pos_hr[1]+sy*scale_factor), text, font=font_hr, fill=(0,0,0,cfg_full["shadow_opacity"]), anchor=anchor)
             # Glow
             if cfg_full["outer_glow"]:
-                gl = Image.new("RGBA", self.img.size, (0,0,0,0))
-                dgl = ImageDraw.Draw(gl)
-                dgl.text(pos, text, font=font, fill=(255,255,255), anchor=anchor)  # stencil
-                gl = gl.filter(ImageFilter.GaussianBlur(cfg_full["glow_radius"]))
-                # tint glow
-                tint = Image.new("RGBA", self.img.size, glow_color)
-                gl = ImageChops.multiply(gl, tint)
-                self.img.paste(gl, (0,0), gl)
+                draw_glow_hr.text(pos_hr, text, font=font_hr, fill=(255,255,255), anchor=anchor)  # stencil
             # Main text
             if cfg_full["use_stroke"]:
-                draw_target.text(pos, text, font=font, fill=base_color, anchor=anchor,
-                                 stroke_width=cfg_full["stroke_width"], stroke_fill=stroke_color)
+                draw_target_hr.text(pos_hr, text, font=font_hr, fill=base_color, anchor=anchor,
+                                 stroke_width=cfg_full["stroke_width"] * scale_factor, stroke_fill=stroke_color)
             else:
-                draw_target.text(pos, text, font=font, fill=base_color, anchor=anchor)
+                draw_target_hr.text(pos_hr, text, font=font_hr, fill=base_color, anchor=anchor)
         
-        # Draw texts with configurable anchors and offsets
-        draw_text_effects(ImageDraw.Draw(self.img), name_text, (left_x, left_y), name_font, anchor_name)
-        draw_text_effects(ImageDraw.Draw(self.img), rarity_text, (rarity_x, rarity_y), rarity_font, anchor_rarity)
-        draw_text_effects(ImageDraw.Draw(self.img), number_text, (number_x, number_y), number_font, anchor_number)
+        # Draw texts with configurable anchors and offsets on high-res layers
+        draw_text_effects_hr(draw_text_hr, name_text, (left_x, left_y), name_font, anchor_name)
+        draw_text_effects_hr(draw_text_hr, rarity_text, (rarity_x, rarity_y), rarity_font, anchor_rarity)
+        draw_text_effects_hr(draw_text_hr, number_text, (number_x, number_y), number_font, anchor_number)
+
+        # Apply filters, downscale and composite layers
+        if cfg_full["drop_shadow"]:
+            shadow_layer_hr = shadow_layer_hr.filter(ImageFilter.GaussianBlur(cfg_full["shadow_blur"] * scale_factor))
+            shadow_layer = shadow_layer_hr.resize((self.w, self.h), Image.Resampling.LANCZOS)
+            self.img = Image.alpha_composite(self.img, shadow_layer)
+
+        if cfg_full["outer_glow"]:
+            glow_layer_hr = glow_layer_hr.filter(ImageFilter.GaussianBlur(cfg_full["glow_radius"] * scale_factor))
+            tint_hr = Image.new("RGBA", (scaled_w, scaled_h), glow_color)
+            glow_layer_hr = ImageChops.multiply(glow_layer_hr, tint_hr)
+            glow_layer = glow_layer_hr.resize((self.w, self.h), Image.Resampling.LANCZOS)
+            self.img = Image.alpha_composite(self.img, glow_layer)
+
+        text_layer = text_layer_hr.resize((self.w, self.h), Image.Resampling.LANCZOS)
+        self.img = Image.alpha_composite(self.img, text_layer)
         
-        # Debug boxes
+        # Debug boxes - scaled
         if cfg_full["debug_draw_boxes"]:
             dbg = ImageDraw.Draw(self.img)
-            dbg.rectangle(self.panel, outline=(0,255,0,200), width=2)  # panel
-            dbg.rectangle((x1,y1,x2,y2), outline=(255,165,0,200), width=2)  # padded content
+            # Need to scale panel and content box coordinates back down for debug drawing on self.img
+            original_panel = tuple(int(c / scale_factor) for c in scaled_panel)
+            original_content_box = tuple(int(c / scale_factor) for c in content)
+            original_left_col = tuple(int(c / scale_factor) for c in (x1, y1, x1+left_w, y2))
+            original_right_col = tuple(int(c / scale_factor) for c in (x1+left_w, y1, x2, y2))
+
+            dbg.rectangle(original_panel, outline=(0,255,0,200), width=2)  # panel
+            dbg.rectangle(original_content_box, outline=(255,165,0,200), width=2)  # padded content
             # left and right content columns
-            dbg.rectangle((x1, y1, x1+left_w, y2), outline=(0,0,255,200), width=1)
-            dbg.rectangle((x1+left_w, y1, x2, y2), outline=(255,0,0,200), width=1)
+            dbg.rectangle(original_left_col, outline=(0,0,255,200), width=1)
+            dbg.rectangle(original_right_col, outline=(255,0,0,200), width=1)
         
         return self.img
 
@@ -421,8 +459,18 @@ def render_panel_text(
         panel_box_rel = (0.10, 0.78, 0.90, 0.90)
     if panel_box is None:
         panel_box = rel_to_abs(panel_box_rel, w, h)
+    
+    # Load full config including defaults and any file-based config
+    full_config = dict(DEFAULT_CONFIG)
+    config_file_path = os.path.join(os.path.dirname(__file__), "config.json")
+    if os.path.exists(config_file_path):
+        with open(config_file_path, "r", encoding="utf-8") as f:
+            file_config = json.load(f)
+        full_config.update(file_config)
+    full_config.update(config or {}) # Overlay user-provided config last
+
     renderer = AcrylicPanelTextRenderer(base_img, panel_box)
-    out = renderer.render(name, rarity, number, config or {})
+    out = renderer.render(name, rarity, number, full_config)
     out.save(output_path)
     return output_path
 
