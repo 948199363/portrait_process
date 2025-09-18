@@ -575,9 +575,151 @@ def render_panel_text(
     out.save(output_path)
     return output_path
 
+
+def overlay_icon(
+    base_image_path: str,
+    icon_path: str,
+    output_path: str,
+    position: Tuple[int, int] = None,
+    icon_size: Tuple[int, int] = None,
+    padding: int = 20
+):
+    """
+    将图标缩放后插入到图片的右上方
+    
+    Args:
+        base_image_path: 基础图片路径
+        icon_path: 图标路径
+        output_path: 输出路径
+        position: 图标位置 (x, y) 相对于右上角的偏移量，默认为 None（自动计算）
+        icon_size: 图标大小 (width, height)，默认为 None（自动计算）
+        padding: 图标与边缘的间距，默认为 20 像素
+    """
+    # 打开基础图片和图标
+    base_img = Image.open(base_image_path).convert("RGBA")
+    icon = Image.open(icon_path).convert("RGBA")
+    
+    # 获取图片尺寸
+    base_width, base_height = base_img.size
+    
+    # 计算图标尺寸
+    if icon_size is None:
+        # 默认图标大小为图片高度的 1/8
+        icon_width = icon_height = min(base_width, base_height) // 8
+    else:
+        icon_width, icon_height = icon_size
+    
+    # 调整图标大小
+    icon = icon.resize((icon_width, icon_height), Image.Resampling.LANCZOS)
+    
+    # 计算图标位置
+    if position is None:
+        # 默认位置在右上角，距离边缘 padding 像素
+        x = base_width - icon_width - padding
+        y = padding
+    else:
+        # 使用相对位置计算
+        x, y = position
+        # 确保位置是相对于右上角的
+        x = base_width - icon_width - x
+        y = y
+    
+    # 将图标粘贴到基础图片上
+    base_img.paste(icon, (x, y), icon)
+    
+    # 保存结果
+    base_img.save(output_path)
+    return output_path
+
+def batch_overlay_icons(
+    base_folder: str = "output_acrylic_text",
+    icon_folder: str = "icon",
+    output_folder: str = "output_acrylic_text_with_icons",
+    icon_size: Tuple[int, int] = None,
+    position: Tuple[int, int] = None,
+    padding: int = 20
+):
+    """
+    批量处理图片，将对应的图标插入到图片的右上角
+    
+    Args:
+        base_folder: 基础图片文件夹路径
+        icon_folder: 图标文件夹路径
+        output_folder: 输出文件夹路径
+        icon_size: 图标大小 (width, height)，默认为 None（自动计算）
+        position: 图标位置 (x, y) 相对于右上角的偏移量，默认为 None（自动计算）
+        padding: 图标与边缘的间距，默认为 20 像素
+    """
+    import os
+    
+    # 创建输出文件夹
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # 获取图标文件映射
+    icon_files = {}
+    for icon_file in os.listdir(icon_folder):
+        if icon_file.lower().endswith((".png", ".jpg", ".jpeg")):
+            # 提取图标名称（不包含扩展名）
+            icon_name = os.path.splitext(icon_file)[0].upper()
+            icon_files[icon_name] = os.path.join(icon_folder, icon_file)
+    
+    # 处理所有基础图片
+    for filename in os.listdir(base_folder):
+        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
+            # 构建输入和输出路径
+            input_path = os.path.join(base_folder, filename)
+            output_path = os.path.join(output_folder, filename)
+            
+            # 从文件名中提取帧类型（假设文件名格式为 acrylic_1_frame_XXX.png）
+            frame_type = None
+            if "frame_" in filename:
+                frame_type = filename.split("frame_")[1].split(".")[0].upper()
+            
+            # 查找对应的图标
+            icon_path = None
+            if frame_type and frame_type in icon_files:
+                icon_path = icon_files[frame_type]
+            elif "EPIC" in filename.upper() and "EPIC" in icon_files:
+                icon_path = icon_files["EPIC"]
+            elif "MYTHIC" in filename.upper() and "MYTHIC" in icon_files:
+                icon_path = icon_files["MYTHIC"]
+            elif "RARE" in filename.upper() and "R" in icon_files:
+                icon_path = icon_files["R"]
+            elif "SR" in filename.upper() and "SR" in icon_files:
+                icon_path = icon_files["SR"]
+            elif "UC" in filename.upper() and "UC" in icon_files:
+                icon_path = icon_files["UC"]
+            elif "C" in filename.upper() and "C" in icon_files:
+                icon_path = icon_files["C"]
+            
+            # 如果找到对应的图标，则叠加图标
+            if icon_path:
+                print(f"Processing {input_path} with icon {icon_path} -> {output_path}")
+                overlay_icon(input_path, icon_path, output_path, position, icon_size, padding)
+            else:
+                # 如果没有找到对应的图标，则直接复制原图
+                print(f"No matching icon found for {filename}, copying original image")
+                base_img = Image.open(input_path)
+                base_img.save(output_path)
+
+
+def process_images_with_icons():
+    """
+    处理 output_acrylic_text 文件夹中的所有图片，并添加对应的图标
+    """
+    # 执行批量图标叠加
+    batch_overlay_icons(
+        base_folder="output_acrylic_text",
+        icon_folder="icon",
+        output_folder="output_acrylic_text_with_icons"
+    )
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
         # 批量处理 output_acrylic 文件夹中所有图片
-        import sys, json, os
+        import json
         config_path = sys.argv[1]
         with open(config_path, "r", encoding="utf-8") as f:
             opts = json.load(f)
@@ -597,3 +739,6 @@ if __name__ == "__main__":
                 output_path = os.path.join(output_folder, fname)
                 print(f"Processing {input_path} -> {output_path}")
                 render_panel_text(input_path, output_path, name, rarity, number, panel_box, panel_box_rel, opts)
+    else:
+        # 处理已有的带文字的图片并添加图标
+        process_images_with_icons()
