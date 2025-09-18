@@ -1,5 +1,7 @@
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops, ImageStat, ImageOps
 import os, math, json
+import numpy as np
+import colorsys
 from typing import Tuple, Optional, Dict
 
 # ------------- Utilities -------------
@@ -176,17 +178,117 @@ class AcrylicPanelTextRenderer:
             bbox = draw.textbbox((0,0), text, font=f)
             return (f, bbox[2]-bbox[0], bbox[3]-bbox[1], min_px_scaled, text)
     
+    def _sample_frame_color(self, img: Image.Image, mode="bottom", band=0.05):
+        """返回 (r,g,b)，从图像边缘区域取主色；bottom 模式更贴近下边框。"""
+        rgb = img.convert("RGB")
+        W, H = rgb.size
+        arr = np.asarray(rgb, dtype=np.uint8)
+        if mode == "bottom":
+            t = max(1, int(H * band))
+            x0, x1 = int(W * 0.06), int(W * 0.94)  # 避开四角
+            region = arr[H-t:H-1, x0:x1, :]
+        else:  # ring：四边取样
+            t = max(1, int(min(W, H) * band))
+            mask = np.zeros((H, W), dtype=bool)
+            mask[:t, :] = True
+            mask[H-t:, :] = True
+            mask[:, :t] = True
+            mask[:, W-t:] = True
+            region = arr[mask]
+        if region.size == 0:
+            return (255, 255, 255)
+        # 用中位数对抗噪点
+        med = np.median(region.reshape(-1, 3), axis=0)
+        return tuple(int(v) for v in med)
+
     def _auto_colors(self, cfg):
-        bg = sample_avg_color(self.img, self.panel)
-        lum = luminance(bg)
-        if lum > 180:
-            base = tuple(cfg["text_color_dark"])
-            stroke = tuple(cfg["stroke_color_dark"])
-            glow_color = (0,0,0,cfg["glow_opacity"])
+        # 从边框取样颜色
+        frame_rgb = self._sample_frame_color(self.img)
+        print("frame_rgb", frame_rgb)
+        
+        # 将边框颜色转换为HSL色彩空间，以便更容易调整
+        frame_r, frame_g, frame_b = frame_rgb
+        frame_h, frame_l, frame_s = colorsys.rgb_to_hls(frame_r/255.0, frame_g/255.0, frame_b/255.0)
+        
+        # 根据边框亮度调整文字亮度，但保持在同一色调范围内
+        # 如果边框较亮，文字稍微暗一些；如果边框较暗，文字稍微亮一些
+        if frame_l > 0.7:
+            # 边框很亮，文字稍微暗一些
+            text_l = max(0.6, frame_l - 0.2)
+        elif frame_l < 0.5:
+            # 边框很暗，文字稍微亮一些
+            text_l = min(0.6, frame_l + 0.2)
         else:
-            base = tuple(cfg["text_color_light"])
-            stroke = tuple(cfg["stroke_color_light"])
-            glow_color = (255,255,255,cfg["glow_opacity"])
+            # 边框中等，文字保持中等亮度
+            text_l = frame_l
+        
+        # 保持一定的饱和度以确保文字颜色丰富
+        text_s = max(0.3, frame_s)
+        
+        # # 特殊处理：如果边框是接近灰色的，给文字增加一些色彩
+        # if frame_s < 0.15:
+        #     # 边框接近灰色，给文字增加一些色彩
+        #     text_s = max(0.3, text_s + 0.4)
+        
+        # 转换回RGB色彩空间
+        text_r, text_g, text_b = colorsys.hls_to_rgb(frame_h, text_l, text_s)
+        
+        # 调整RGB值确保足够的对比度但保持色调一致
+        text_rgb = (int(text_r * 255), int(text_g * 255), int(text_b * 255))
+        
+        # 进一步调整确保对比度
+        frame_lum = luminance(frame_rgb)
+        text_lum = luminance(text_rgb)
+        
+        # 检查对比度，如果不够则进一步调整
+        if frame_lum > text_lum:
+            contrast = frame_lum / (text_lum + 0.1)
+        else:
+            contrast = text_lum / (frame_lum + 0.1)
+            
+        if contrast < 2.0:  # 最小对比度要求（比之前更低）
+            if frame_lum > 128:
+                # 边框亮，文字稍微暗一些
+                text_rgb = (
+                    max(0, min(255, int(text_rgb[0] * 0.85))), 
+                    max(0, min(255, int(text_rgb[1] * 0.85))), 
+                    max(0, min(255, int(text_rgb[2] * 0.85)))
+                )
+            else:
+                # 边框暗，文字稍微亮一些
+                text_rgb = (
+                    max(0, min(255, int(255 - (255 - text_rgb[0]) * 0.7))), 
+                    max(0, min(255, int(255 - (255 - text_rgb[1]) * 0.7))), 
+                    max(0, min(255, int(255 - (255 - text_rgb[2]) * 0.7)))
+                )
+        
+        # 确定描边颜色（基于文字颜色但稍微加强对比度）
+        text_lum_final = luminance(text_rgb)
+        if text_lum_final > 128:
+            # 文字较亮，使用稍暗的描边
+            stroke_rgb = (
+                max(0, int(text_rgb[0] * 0.7)), 
+                max(0, int(text_rgb[1] * 0.7)), 
+                max(0, int(text_rgb[2] * 0.7))
+            )
+            glow_color = (0, 0, 0, cfg["glow_opacity"])
+        else:
+            # 文字较暗，使用稍亮的描边
+            stroke_rgb = (
+                min(255, int(255 - (255 - text_rgb[0]) * 0.7)), 
+                min(255, int(255 - (255 - text_rgb[1]) * 0.7)), 
+                min(255, int(255 - (255 - text_rgb[2]) * 0.7))
+            )
+            glow_color = (255, 255, 255, cfg["glow_opacity"])
+
+        # 如果base亮度不够，统一拉高
+        if luminance(text_rgb) < 150:
+            text_rgb = tuple(clamp(c + 60, 0, 255) for c in text_rgb)
+
+        # 添加透明度
+        base = (*text_rgb, 238)
+        stroke = (*stroke_rgb, 120)  # 增加描边透明度
+        
         return base, stroke, glow_color
     
     def render(self, name, rarity, number, cfg: Dict):
@@ -357,7 +459,6 @@ class AcrylicPanelTextRenderer:
         off_number = to_xy_scaled(cfg_full.get("offset_number", (0,0)), scale_factor)
 
         left_x += off_name[0]; left_y += off_name[1]
-        print("full cfg_full:", cfg_full)
         # rarity aligned to right_x_right (rt by default) so x is right edge
         right_x_right = right_x_right + off_rarity[0]  # keep base
         rarity_x = right_x_right
@@ -480,7 +581,6 @@ if __name__ == "__main__":
         config_path = sys.argv[1]
         with open(config_path, "r", encoding="utf-8") as f:
             opts = json.load(f)
-            print(opts)
         name = opts.get("name", "吴宣仪")
         rarity = opts.get("rarity", "N")
         number = opts.get("number", "No.001 / 100")
