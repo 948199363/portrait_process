@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np, colorsys
+import os
 
 try:
     from PIL import Image as _Image
@@ -193,9 +194,15 @@ if __name__ == "__main__":
         harmonize_lift=0.22,           # 提亮
     )
 
-    in_img = "output/1.jpg"      # ← 换成你的原图路径
-    out_img = "output_acrylic.png"
-    print(acrylic_overlay(in_img, out_img, params))
+    input_folder = "output"
+    output_folder = "output_acrylic"
+    os.makedirs(output_folder, exist_ok=True)
+
+    for fname in os.listdir(input_folder):
+        if fname.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
+            in_img = os.path.join(input_folder, fname)
+            out_img = os.path.join(output_folder, f"acrylic_{fname}")
+            print(acrylic_overlay(in_img, out_img, params))
 
     # ===== 示例 2：放到顶部、更小、更透明 =====
     # params2 = AcrylicParams(width_ratio=0.6, height_ratio=0.14, anchor="top", margin_px=36,

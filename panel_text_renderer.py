@@ -475,18 +475,25 @@ def render_panel_text(
     return output_path
 
 if __name__ == "__main__":
-    # Simple CLI: python panel_text_renderer.py in.png out.png '{"name":"...","rarity":"...","number":"...","panel_box_rel":[0.1,0.8,0.9,0.9]}'
-    import sys, json
-    input_path = sys.argv[1]
-    output_path = sys.argv[2]
-    config_path = sys.argv[3]
-    with open(config_path, "r", encoding="utf-8") as f:
-        opts = json.load(f)
-        print(opts)
-    name = opts.get("name", "吴宣仪")
-    rarity = opts.get("rarity", "N")
-    number = opts.get("number", "No.001 / 100")
-    panel_box = tuple(opts["panel_box"]) if "panel_box" in opts else None
-    panel_box_rel = tuple(opts["panel_box_rel"]) if "panel_box_rel" in opts else None
+        # 批量处理 output_acrylic 文件夹中所有图片
+        import sys, json, os
+        config_path = sys.argv[1]
+        with open(config_path, "r", encoding="utf-8") as f:
+            opts = json.load(f)
+            print(opts)
+        name = opts.get("name", "吴宣仪")
+        rarity = opts.get("rarity", "N")
+        number = opts.get("number", "No.001 / 100")
+        panel_box = tuple(opts["panel_box"]) if "panel_box" in opts else None
+        panel_box_rel = tuple(opts["panel_box_rel"]) if "panel_box_rel" in opts else None
 
-    render_panel_text(input_path, output_path, name, rarity, number, panel_box, panel_box_rel, opts)
+        input_folder = "output_acrylic"
+        output_folder = "output_acrylic_text"
+        os.makedirs(output_folder, exist_ok=True)
+
+        for fname in os.listdir(input_folder):
+            if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+                input_path = os.path.join(input_folder, fname)
+                output_path = os.path.join(output_folder, fname)
+                print(f"Processing {input_path} -> {output_path}")
+                render_panel_text(input_path, output_path, name, rarity, number, panel_box, panel_box_rel, opts)
