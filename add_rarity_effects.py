@@ -26,28 +26,35 @@ RARITY_CONFIG = {
         "name": "罕见",
         "color": (64, 224, 208, 45),  # 适中的青色
         "effects": ["glow", "particles"],
-        "particle_count": 15,
+        "particle_count": 20,
         "foil_intensity": 0.2
     },
     "rare": {
         "name": "稀有",
         "color": (0, 128, 255, 50),  # 适中的蓝色
         "effects": ["glow", "particles", "foil"],
-        "particle_count": 25,
+        "particle_count": 30,
+        "foil_intensity": 0.3
+    },
+    "superrare": {
+        "name": "超稀有",
+        "color": (255, 215, 0, 50),  # 适中的蓝色
+        "effects": ["glow", "particles", "foil"],
+        "particle_count": 40,
         "foil_intensity": 0.3
     },
     "epic": {
         "name": "史诗",
-        "color": (128, 0, 255, 55),  # 适中的紫色
+        "color": (64, 224, 208, 60),  # 适中的紫色
         "effects": ["glow", "particles", "foil", "sparkle"],
-        "particle_count": 40,
+        "particle_count": 70,
         "foil_intensity": 0.4
     },
     "legendary": {
         "name": "传奇",
-        "color": (255, 215, 0, 60),  # 适中的金色
+        "color": (128, 0, 255, 55),  # 适中的金色
         "effects": ["glow", "particles", "foil", "sparkle", "aura"],
-        "particle_count": 60,
+        "particle_count": 100,
         "foil_intensity": 0.5
     }
 }
@@ -487,12 +494,49 @@ def apply_rarity_effects(image_path: str, rarity: str, output_path: str, enable_
     # 保存结果
     image.save(output_path, "PNG")
 
-def process_images(input_folder: str, output_folder: str, rarity_mapping: Dict[str, str], enable_glow: bool = True, enable_aura: bool = True) -> None:
+def extract_rarity_from_filename(filename: str) -> str:
+    """
+    从文件名中提取稀有度信息
+    文件名格式: 序号_人名_稀有度.png 或 acrylic_序号_人名_稀有度.png
+    :param filename: 文件名
+    :return: 稀有度字符串
+    """
+    # 移除扩展名
+    name_without_ext = os.path.splitext(filename)[0]
+    
+    # 处理acrylic_前缀的文件名
+    if name_without_ext.startswith("acrylic_"):
+        name_without_ext = name_without_ext[8:]  # 移除"acrylic_"前缀
+    
+    # 按照"_"分割
+    parts = name_without_ext.split('_')
+    
+    # 稀有度通常是最后一个部分
+    if len(parts) >= 3:
+        rarity_code = parts[-1].upper()
+        
+        # 根据稀有度代码映射到完整名称
+        rarity_mapping = {
+            "C": "common",
+            "UC": "uncommon",
+            "SR": "superrare",
+            "R": "rare",
+            "EPIC": "epic",
+            "MYTHIC": "legendary",
+        }
+        
+        return rarity_mapping.get(rarity_code, "common")
+    
+    # 如果无法解析，返回默认值
+    return "common"
+
+
+def process_images(input_folder: str, output_folder: str, rarity_mapping: Dict[str, str] = None, enable_glow: bool = True, enable_aura: bool = True) -> None:
     """
     处理文件夹中的所有图片
     :param input_folder: 输入文件夹路径
     :param output_folder: 输出文件夹路径
-    :param rarity_mapping: 文件名到稀有度的映射
+    :param rarity_mapping: 文件名到稀有度的映射（可选，用于向后兼容）
     :param enable_glow: 是否启用发光效果
     :param enable_aura: 是否启用光环效果
     """
@@ -508,8 +552,8 @@ def process_images(input_folder: str, output_folder: str, rarity_mapping: Dict[s
             input_path = os.path.join(input_folder, filename)
             output_path = os.path.join(output_folder, filename)
             
-            # 获取稀有度
-            rarity = rarity_mapping.get(filename, "common")  # 默认为普通
+            # 获取稀有度 - 优先从文件名中提取，然后才是传入的映射
+            rarity = extract_rarity_from_filename(filename)
             
             print(f"Processing {filename} with {RARITY_CONFIG[rarity]['name']} effects...")
             
@@ -558,19 +602,13 @@ def main():
         output_folder = "output_rarity_effects"
     
     # 创建示例稀有度映射文件
-    mapping_file = "rarity_mapping.json"
-    if not os.path.exists(mapping_file):
-        print("Creating sample rarity mapping...")
-        sample_mapping = create_sample_rarity_mapping(input_folder)
-        with open(mapping_file, 'w', encoding='utf-8') as f:
-            json.dump(sample_mapping, f, ensure_ascii=False, indent=2)
-        print(f"Sample rarity mapping saved to {mapping_file}")
-        print("Please edit this file to set the correct rarity for each image.")
-        return
-    
-    # 读取稀有度映射
-    with open(mapping_file, 'r', encoding='utf-8') as f:
-        rarity_mapping = json.load(f)
+    print("Creating sample rarity mapping...")
+    sample_mapping = create_sample_rarity_mapping(input_folder)
+    print("Please edit this file to set the correct rarity for each image.")
+    # 注意：即使没有rarity_mapping.json文件，我们也可以继续处理图片
+    # 因为我们现在可以从文件名中提取稀有度
+    rarity_mapping = sample_mapping
+
     
     # 处理图片
     print("Processing images with rarity effects...")

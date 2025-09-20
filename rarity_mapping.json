@@ -1,8 +1,12 @@
 {
-  "acrylic_1_frame_C.png": "common",
-  "acrylic_1_frame_UC.png": "uncommon",
-  "acrylic_1_frame_SR.png": "rare",
-  "acrylic_1_frame_R.png": "epic",
-  "acrylic_1_frame_EPIC.png": "epic",
-  "acrylic_1_frame_MYTHIC.png": "legendary"
+  "acrylic_0_刘亦菲_MYTHIC.png": "common",
+  "acrylic_1_金采源_MYTHIC.png": "uncommon",
+  "acrylic_2_萧亚轩_EPIC.png": "rare",
+  "acrylic_3_郑乃馨_R.png": "epic",
+  "acrylic_4_徐贤_UC.png": "legendary",
+  "acrylic_5_范冰冰_SR.png": "common",
+  "acrylic_6_宫胁咲良_EPIC.png": "uncommon",
+  "acrylic_7_宋雨琦_EPIC.png": "rare",
+  "acrylic_8_孙承完_R.png": "epic",
+  "acrylic_9_虞书欣_R.png": "legendary"
 }

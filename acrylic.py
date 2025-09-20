@@ -194,7 +194,7 @@ if __name__ == "__main__":
         harmonize_lift=0.22,           # 提亮
     )
 
-    input_folder = "output"
+    input_folder = "output_frames"
     output_folder = "output_acrylic"
     os.makedirs(output_folder, exist_ok=True)
 

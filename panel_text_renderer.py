@@ -3,6 +3,8 @@ import os, math, json
 import numpy as np
 import colorsys
 from typing import Tuple, Optional, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # ------------- Utilities -------------
 def find_cjk_font(preferred: Optional[str] = None):
@@ -683,7 +685,7 @@ def batch_overlay_icons(
                 icon_path = icon_files["EPIC"]
             elif "MYTHIC" in filename.upper() and "MYTHIC" in icon_files:
                 icon_path = icon_files["MYTHIC"]
-            elif "RARE" in filename.upper() and "R" in icon_files:
+            elif "R" in filename.upper() and "R" in icon_files:
                 icon_path = icon_files["R"]
             elif "SR" in filename.upper() and "SR" in icon_files:
                 icon_path = icon_files["SR"]
@@ -711,34 +713,152 @@ def process_images_with_icons():
     batch_overlay_icons(
         base_folder="output_acrylic_text",
         icon_folder="icon",
-        output_folder="output_acrylic_text_with_icons"
+        output_folder="output_acrylic_text_with_icons",
+        icon_size=(80, 80),  # 图标大小为 100x100 像素
+        position=(120, 100),   # 图标位置距离右上角 100, 100 像素
+        padding=20             # 图标与边缘的间距为 20 像素
     )
+
+
+def extract_info_from_filename(filename):
+    """
+    从文件名中提取序号、人名和稀有度信息
+    文件名格式: acrylic_序号_人名_稀有度.png
+    """
+    # 移除扩展名
+    name_without_ext = os.path.splitext(filename)[0]
+    
+    # 按照"_"分割
+    parts = name_without_ext.split('_')
+    if len(parts) >= 4:
+        # 序号是第三个部分，人名是第四个部分，稀有度是第五个部分
+        index = parts[1]
+        name = parts[2]
+        rarity = parts[3]
+        return index, name, rarity
+    
+    # 如果无法解析，返回默认值
+    return "0", "未知", "C"
+
+
+def process_single_image(args):
+    """
+    处理单张图片的函数，用于多线程处理
+    """
+    input_path, output_path, name, rarity_code, number, panel_box, panel_box_rel, opts = args
+    
+    try:
+        print(f"Processing {input_path} -> {output_path}")
+        print(f"  Name: {name}, Rarity: ({rarity_code}), Number: {number}")
+        render_panel_text(input_path, output_path, name, rarity_code, number, panel_box, panel_box_rel, opts)
+        return True, input_path, output_path, None
+    except Exception as e:
+        return False, input_path, output_path, str(e)
+
+
+def process_images_multithreaded(input_folder="output_acrylic", output_folder="output_acrylic_text", 
+                                max_workers=None, config_path=None):
+    """
+    使用多线程处理图片
+    
+    Args:
+        input_folder: 输入文件夹
+        output_folder: 输出文件夹
+        max_workers: 最大线程数，默认为CPU核心数
+        config_path: 配置文件路径
+    """
+    # 从配置文件读取选项
+    opts = {}
+    if config_path and os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            opts = json.load(f)
+    
+    # 从配置中获取默认值
+    panel_box = tuple(opts["panel_box"]) if "panel_box" in opts else None
+    panel_box_rel = tuple(opts["panel_box_rel"]) if "panel_box_rel" in opts else None
+
+    # 创建输出文件夹
+    os.makedirs(output_folder, exist_ok=True)
+
+    # 统计各稀有度的数量
+    rarity_counts = {}
+    for fname in os.listdir(input_folder):
+        if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+            _, _, rarity_code = extract_info_from_filename(fname)
+            rarity_counts[rarity_code] = rarity_counts.get(rarity_code, 0) + 1
+
+    # 为每个稀有度维护一个序号计数器
+    rarity_counters = {rarity: 0 for rarity in rarity_counts}
+
+    # 收集所有需要处理的图片
+    image_args = []
+    # 先收集所有文件信息，按稀有度分组
+    files_by_rarity = {}
+    for fname in os.listdir(input_folder):
+        if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+            _, _, rarity_code = extract_info_from_filename(fname)
+            if rarity_code not in files_by_rarity:
+                files_by_rarity[rarity_code] = []
+            files_by_rarity[rarity_code].append(fname)
+    
+    # 处理每个稀有度的文件
+    for rarity_code, files in files_by_rarity.items():
+        for fname in files:
+            input_path = os.path.join(input_folder, fname)
+            output_path = os.path.join(output_folder, fname)
+            
+            # 从文件名中提取信息
+            index, name, _ = extract_info_from_filename(fname)
+            # 更新稀有度计数器
+            rarity_counters[rarity_code] += 1
+            # 生成新的序号格式：该稀有度中的序号/该稀有度总数
+            number = f"No.{rarity_counters[rarity_code]} / {rarity_counts[rarity_code]}"
+            
+            image_args.append((
+                input_path, output_path, name, rarity_code, number, 
+                panel_box, panel_box_rel, opts
+            ))
+
+    # 使用线程池处理图片
+    successful = 0
+    failed = 0
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_args = {
+            executor.submit(process_single_image, args): args 
+            for args in image_args
+        }
+        
+        # 处理完成的任务
+        for future in as_completed(future_to_args):
+            success, input_path, output_path, error = future.result()
+            if success:
+                successful += 1
+                print(f"Successfully processed {input_path}")
+            else:
+                failed += 1
+                print(f"Failed to process {input_path}: {error}")
+    
+    print(f"Processing complete. Successful: {successful}, Failed: {failed}")
+    return successful, failed
 
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
-        # 批量处理 output_acrylic 文件夹中所有图片
-        import json
+        # 批量处理 output_acrylic 文件夹中所有图片（使用多线程）
         config_path = sys.argv[1]
-        with open(config_path, "r", encoding="utf-8") as f:
-            opts = json.load(f)
-        name = opts.get("name", "吴宣仪")
-        rarity = opts.get("rarity", "N")
-        number = opts.get("number", "No.001 / 100")
-        panel_box = tuple(opts["panel_box"]) if "panel_box" in opts else None
-        panel_box_rel = tuple(opts["panel_box_rel"]) if "panel_box_rel" in opts else None
-
-        input_folder = "output_acrylic"
-        output_folder = "output_acrylic_text"
-        os.makedirs(output_folder, exist_ok=True)
-
-        for fname in os.listdir(input_folder):
-            if fname.lower().endswith((".png", ".jpg", ".jpeg")):
-                input_path = os.path.join(input_folder, fname)
-                output_path = os.path.join(output_folder, fname)
-                print(f"Processing {input_path} -> {output_path}")
-                render_panel_text(input_path, output_path, name, rarity, number, panel_box, panel_box_rel, opts)
-    else:
+        
+        # 使用多线程处理图片
+        successful, failed = process_images_multithreaded(
+            input_folder="output_acrylic",
+            output_folder="output_acrylic_text",
+            config_path=config_path
+        )
+        
         # 处理已有的带文字的图片并添加图标
         process_images_with_icons()
+    else:
+        print("Usage: python panel_text_renderer.py <config_path>")
+        print("Example: python panel_text_renderer.py config.json")
